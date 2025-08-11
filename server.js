@@ -42,10 +42,11 @@ app.post('/api/auth/register', async (req, res) => {
     if (role === 'doctor' && secretCode !== DOCTOR_SECRET_CODE) return res.status(403).json({ success: false, message: 'Invalid doctor code' });
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ success: false, message: 'Email already exists' });
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    const user = new User({ email, password: hashedPassword, role: role || 'patient' });
+    
+    // Removed manual hashing here—let User.js pre-save hook handle it
+    const user = new User({ email, password, role: role || 'patient' });
     await user.save();
+    
     console.log('User registered:', email);
     res.status(201).json({ success: true, message: 'Account created' });
   } catch (error) {

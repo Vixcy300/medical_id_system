@@ -21,15 +21,35 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-async function connectToDatabase() {
-  try {
-    await mongoose.connect(MONGODB_URI);
-    console.log('MongoDB Connected');
-  } catch (error) {
-    console.error('MongoDB Error:', error.message);
+// Reliable DB connection with retry
+const connectDB = async (retries = 3) => {
+  while (retries > 0) {
+    if (mongoose.connection.readyState === 1) {
+      console.log('MongoDB already connected');
+      return;
+    }
+    try {
+      await mongoose.connect(MONGODB_URI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+        serverSelectionTimeoutMS: 5000,  // Fail fast on selection
+        socketTimeoutMS: 30000,          // Close idle after 30s
+        family: 4,                       // Prefer IPv4
+        bufferCommands: false            // Disable buffering for immediate fails
+      });
+      console.log('MongoDB Connected');
+      return;
+    } catch (error) {
+      console.error(`MongoDB connection attempt failed (${retries} left):`, error.message);
+      retries--;
+      await new Promise(resolve => setTimeout(resolve, 2000));  // Wait 2s before retry
+    }
   }
-}
-connectToDatabase();
+  throw new Error('MongoDB connection failed after retries');
+};
+
+// Connect at startup
+connectDB().catch(console.error);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', db: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected' });
@@ -37,13 +57,13 @@ app.get('/api/health', (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
+    await connectDB();  // Ensure connected before query
     const { email, password, role, secretCode } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
     if (role === 'doctor' && secretCode !== DOCTOR_SECRET_CODE) return res.status(403).json({ success: false, message: 'Invalid doctor code' });
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ success: false, message: 'Email already exists' });
     
-    // Removed manual hashing here—let User.js pre-save hook handle it
     const user = new User({ email, password, role: role || 'patient' });
     await user.save();
     
@@ -57,9 +77,10 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
+    await connectDB();  // Ensure connected before query
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
-    const user = await User.findOne({ email });
+   424    const user = await User.findOne({ email });
     if (!user) return res.status(401).json({ success: false, message: 'User not found' });
     if (!(await bcrypt.compare(password, user.password))) return res.status(401).json({ success: false, message: 'Invalid password' });
     const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -85,6 +106,7 @@ const authMiddleware = async (req, res, next) => {
 
 app.get('/api/patient/profile', authMiddleware, async (req, res) => {
   try {
+    await connectDB();
     const patient = await Patient.findOne({ userId: req.user.userId });
     res.json({ success: true, patient: patient || null });
   } catch (error) {
@@ -95,9 +117,10 @@ app.get('/api/patient/profile', authMiddleware, async (req, res) => {
 
 app.post('/api/patient/profile', authMiddleware, async (req, res) => {
   try {
+    await connectDB();
     const { personalInfo, medicalInfo, emergencyContact } = req.body;
     let patient = await Patient.findOne({ userId: req.user.userId });
-    if (!patient) patient = new Patient({ userId: req.user.userId, patientId: EMG-${Date.now()} });
+    if (!patient) patient = new Patient({ userId: req.user.userId, patientId: `EMG-${Date.now()}` });
     patient.personalInfo = personalInfo || {};
     patient.medicalInfo = medicalInfo || {};
     patient.emergencyContact = emergencyContact || {};
@@ -112,6 +135,7 @@ app.post('/api/patient/profile', authMiddleware, async (req, res) => {
 
 app.get('/api/doctor/patient/:patientId', authMiddleware, async (req, res) => {
   try {
+    await connectDB();
     const patient = await Patient.findOne({ patientId: req.params.patientId });
     if (!patient) return res.status(404).json({ success: false, message: 'Patient not found' });
     const accessLog = new AccessLog({ patientId: req.params.patientId, accessedBy: req.user.userId });
@@ -128,7 +152,7 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(Server on http://localhost:${PORT});
+  console.log(`Server on http://localhost:${PORT}`);
 });
 
 module.exports = app;

@@ -21,15 +21,36 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-async function connectToDatabase() {
-  try {
-    await mongoose.connect(MONGODB_URI);
-    console.log('MongoDB Connected');
-  } catch (error) {
-    console.error('MongoDB Error:', error.message);
+// Robust DB connection with retries and logging
+const connectDB = async (retries = 5) => {
+  while (retries > 0) {
+    if (mongoose.connection.readyState === 1) {
+      console.log('MongoDB already connected');
+      return;
+    }
+    try {
+      console.log('Attempting MongoDB connection...');
+      await mongoose.connect(MONGODB_URI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 30000,
+        family: 4,
+        bufferCommands: false
+      });
+      console.log('MongoDB Connected successfully');
+      return;
+    } catch (error) {
+      console.error(`Connection attempt failed (${retries} left): ${error.message}`);
+      retries--;
+      await new Promise(resolve => setTimeout(resolve, 5000));  // 5s delay
+    }
   }
-}
-connectToDatabase();
+  throw new Error('MongoDB connection failed after all retries');
+};
+
+// Connect at startup
+connectDB().catch(error => console.error('Startup connection error:', error));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', db: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected' });
@@ -37,26 +58,27 @@ app.get('/api/health', (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
+    await connectDB();
     const { email, password, role, secretCode } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
     if (role === 'doctor' && secretCode !== DOCTOR_SECRET_CODE) return res.status(403).json({ success: false, message: 'Invalid doctor code' });
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ success: false, message: 'Email already exists' });
     
-    // Removed manual hashing here—let User.js pre-save hook handle it
     const user = new User({ email, password, role: role || 'patient' });
     await user.save();
     
     console.log('User registered:', email);
     res.status(201).json({ success: true, message: 'Account created' });
   } catch (error) {
-    console.error('Register Error:', error);
+    console.error('Register Error:', error.message);
     res.status(500).json({ success: false, message: 'Register failed: ' + error.message });
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
+    await connectDB();
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
     const user = await User.findOne({ email });
@@ -66,7 +88,7 @@ app.post('/api/auth/login', async (req, res) => {
     console.log('User logged in:', email);
     res.json({ success: true, token, user: { email, role: user.role } });
   } catch (error) {
-    console.error('Login Error:', error);
+    console.error('Login Error:', error.message);
     res.status(500).json({ success: false, message: 'Login failed: ' + error.message });
   }
 });
@@ -78,26 +100,28 @@ const authMiddleware = async (req, res, next) => {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch (error) {
-    console.error('Auth Error:', error);
+    console.error('Auth Error:', error.message);
     res.status(401).json({ success: false, message: 'Invalid token' });
   }
 };
 
 app.get('/api/patient/profile', authMiddleware, async (req, res) => {
   try {
+    await connectDB();
     const patient = await Patient.findOne({ userId: req.user.userId });
     res.json({ success: true, patient: patient || null });
   } catch (error) {
-    console.error('Profile Error:', error);
+    console.error('Profile Error:', error.message);
     res.status(500).json({ success: false, message: 'Profile fetch failed' });
   }
 });
 
 app.post('/api/patient/profile', authMiddleware, async (req, res) => {
   try {
+    await connectDB();
     const { personalInfo, medicalInfo, emergencyContact } = req.body;
     let patient = await Patient.findOne({ userId: req.user.userId });
-    if (!patient) patient = new Patient({ userId: req.user.userId, patientId: EMG-${Date.now()} });
+    if (!patient) patient = new Patient({ userId: req.user.userId, patientId: `EMG-${Date.now()}` });
     patient.personalInfo = personalInfo || {};
     patient.medicalInfo = medicalInfo || {};
     patient.emergencyContact = emergencyContact || {};
@@ -105,20 +129,21 @@ app.post('/api/patient/profile', authMiddleware, async (req, res) => {
     await patient.save();
     res.json({ success: true, message: 'Profile saved', patient });
   } catch (error) {
-    console.error('Profile Save Error:', error);
+    console.error('Profile Save Error:', error.message);
     res.status(500).json({ success: false, message: 'Save failed' });
   }
 });
 
 app.get('/api/doctor/patient/:patientId', authMiddleware, async (req, res) => {
   try {
+    await connectDB();
     const patient = await Patient.findOne({ patientId: req.params.patientId });
     if (!patient) return res.status(404).json({ success: false, message: 'Patient not found' });
     const accessLog = new AccessLog({ patientId: req.params.patientId, accessedBy: req.user.userId });
     await accessLog.save();
     res.json({ success: true, patient });
   } catch (error) {
-    console.error('Doctor Fetch Error:', error);
+    console.error('Doctor Fetch Error:', error.message);
     res.status(500).json({ success: false, message: 'Fetch failed' });
   }
 });
@@ -128,7 +153,7 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(Server on http://localhost:${PORT});
+  console.log(`Server on http://localhost:${PORT}`);
 });
 
 module.exports = app;

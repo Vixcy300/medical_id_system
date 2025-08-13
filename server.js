@@ -134,6 +134,28 @@ app.post('/api/patient/profile', authMiddleware, async (req, res) => {
   }
 });
 
+// Public route for QR scan (no login required)
+app.get('/api/public/patient/:patientId', async (req, res) => {
+  try {
+    await connectDB();
+    const patient = await Patient.findOne({ patientId: req.params.patientId });
+    if (!patient) return res.status(404).json({ success: false, message: 'Patient not found' });
+    
+    // Log the public access
+    const accessLog = new AccessLog({ 
+      patientId: req.params.patientId, 
+      accessedBy: 'Public', 
+      ipAddress: req.ip 
+    });
+    await accessLog.save();
+    
+    res.json({ success: true, patient });
+  } catch (error) {
+    console.error('Public Fetch Error:', error.message);
+    res.status(500).json({ success: false, message: 'Fetch failed: ' + error.message });
+  }
+});
+
 app.get('/api/doctor/patient/:patientId', authMiddleware, async (req, res) => {
   try {
     await connectDB();
